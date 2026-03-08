@@ -1,6 +1,6 @@
 
 # Rambros Workshop - rambros3d.com
-# 
+#
 # This script is licensed under the Public Domain
 # Feel free to do whatever you want with it.
 #
@@ -22,7 +22,64 @@
 #                          &
 # Future fusion 360 champions of TooTallToby's Tournaments
 
-import adsk.core, adsk.fusion, adsk.cam, traceback
+import adsk.core, adsk.fusion, traceback
+import platform
+import subprocess
+
+APP_NAME = 'Calculate Mass Ultimate'
+CMD_ID = 'RamBros_CalculateMassUltimateCmd'
+CMD_NAME = 'Calculate Mass Ultimate'
+CMD_DESCRIPTION = 'Calculate mass for selected or all solid bodies.'
+WORKSPACE_ID = 'FusionSolidEnvironment'
+ICON_FOLDER = ''
+PANEL_IDS_TO_ADD = ['SolidInspectPanel']
+
+handlers = []
+command_state = {"copy_map": {}}
+
+def log_lifecycle(app, action):
+    try:
+        app.log(f'{APP_NAME}: {action}')
+    except Exception:
+        pass
+
+def get_target_panel(ui):
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    if not workspace:
+        return None, None
+
+    panel = workspace.toolbarPanels.itemById('SolidInspectPanel')
+    if panel:
+        return workspace, panel
+
+    for candidate in workspace.toolbarPanels:
+        name = (candidate.name or '').lower()
+        panel_id = (candidate.id or '').lower()
+        if 'inspect' in name or 'inspect' in panel_id:
+            return workspace, candidate
+
+    return workspace, None
+
+def get_candidate_panels(workspace):
+    panels = []
+    if not workspace:
+        return panels
+
+    # 1) Explicit known IDs first.
+    for panel_id in PANEL_IDS_TO_ADD:
+        panel = workspace.toolbarPanels.itemById(panel_id)
+        if panel and panel not in panels:
+            panels.append(panel)
+
+    # 2) Dynamic match for localized/variant Inspect panel naming.
+    for panel in workspace.toolbarPanels:
+        name = (panel.name or '').lower()
+        panel_id = (panel.id or '').lower()
+        if 'inspect' in name or 'inspect' in panel_id:
+            if panel not in panels:
+                panels.append(panel)
+
+    return panels
 
 def get_all_solid_bodies(component):
     """Retrieve all solid bodies from the component."""
@@ -34,158 +91,233 @@ def get_all_solid_bodies(component):
         solid_bodies.extend(get_all_solid_bodies(occurrence.component))
     return solid_bodies
 
-def calculate_mass_of_body(body):
-    """Calculate the mass of a body using its physical properties."""
-    return body.physicalProperties.mass
+def format_grams_number(mass_kg):
+    grams = mass_kg * 1000.0
+    return f"{grams:.3f}"
 
-def calculate_mass_with_preset_densities(bodies, is_metric):
-    """Calculate total mass of bodies using preset material densities."""
-    total_volumes = {
-        "Steel": 0.0,
-        "Aluminum": 0.0,
-        "ABS": 0.0,
-        "Red Oak": 0.0  # Added new material
-    }
+def sanitize_id(text):
+    safe = ''.join(ch if ch.isalnum() else '_' for ch in text)
+    return safe.strip('_') or 'item'
+
+def copy_to_clipboard(text):
+    system = platform.system()
+    if system == 'Darwin':
+        subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True)
+        return
+    if system == 'Windows':
+        subprocess.run(['cmd', '/c', 'clip'], input=text.encode('utf-16le'), check=True)
+        return
+    subprocess.run(['xclip', '-selection', 'clipboard'], input=text.encode('utf-8'), check=True)
+
+def collect_target_bodies(ui, root_comp):
+    selected_entities = ui.activeSelections
+    if selected_entities.count == 0:
+        all_bodies = get_all_solid_bodies(root_comp)
+        return all_bodies, f'All bodies ({len(all_bodies)})'
+
+    selected_bodies = []
+    for entity in selected_entities:
+        if isinstance(entity.entity, adsk.fusion.BRepBody) and entity.entity.isSolid:
+            if entity.entity not in selected_bodies:
+                selected_bodies.append(entity.entity)
+        elif isinstance(entity.entity, adsk.fusion.Component):
+            component_solid_bodies = get_all_solid_bodies(entity.entity)
+            for body in component_solid_bodies:
+                if body not in selected_bodies:
+                    selected_bodies.append(body)
+        elif isinstance(entity.entity, adsk.fusion.BRepFace):
+            parent_body = entity.entity.body
+            if parent_body.isSolid and parent_body not in selected_bodies:
+                selected_bodies.append(parent_body)
+
+    return selected_bodies, f'Selected bodies ({len(selected_bodies)})'
+
+def build_mass_report_data(bodies):
+    preset_volumes = {"Steel": 0.0, "6061 Aluminum": 0.0, "ABS": 0.0, "American Cherry": 0.0}
+    preset_densities = {"Steel": 7800, "6061 Aluminum": 2700, "ABS": 1020, "American Cherry": 570}
+    actual_material_totals = {}
+    total_mass_kg = 0.0
 
     for body in bodies:
-        physical_properties = body.physicalProperties
-        volume_m3 = physical_properties.volume * 1e-6  # Convert from cm³ to m³
-        for material in total_volumes:
-            total_volumes[material] += volume_m3
+        props = body.physicalProperties
+        volume_m3 = props.volume * 1e-6
+        for material in preset_volumes:
+            preset_volumes[material] += volume_m3
 
-    output_message = ""
-    materials = {
-        "Steel": 7800,
-        "Aluminum": 2700,
-        "ABS": 1020,
-        "Red Oak": 570  # Added new material
-    }
-
-    for material, density in materials.items():
-        total_mass_kg = density * total_volumes[material]
-        if is_metric:
-            total_mass_g = total_mass_kg * 1000  # Convert kg to grams
-            output_message += (
-                f"{material}:\n\n"
-                f"  {total_mass_g:.6f} g\n\n"
-                f"  {total_mass_kg:.6f} kg\n\n"
-            )
-        else:
-            total_mass_lb = total_mass_kg * 2.20462  # Convert kg to pounds
-            output_message += (
-                f"{material}:\n\n"
-                f"  {total_mass_lb:.6f} lb\n\n"
-            )
-    return output_message
-
-def display_mass_with_material_properties(bodies, is_metric):
-    """Display the mass of each body with its name and actual material."""
-    output_message = "Mass using actual material properties:\n\n"
-    for body in bodies:
-        body_name = body.name if body.name else "Unnamed Body"
         material_name = body.material.name if body.material else "Unknown Material"
-        mass_kg = calculate_mass_of_body(body)
-        if is_metric:
-            mass_g = mass_kg * 1000  # Convert kg to grams
-            output_message += f"{body_name} - {material_name}\n{mass_g:.6f} g \n{mass_kg:.6f} kg\n\n"
-        else:
-            mass_lb = mass_kg * 2.20462  # Convert kg to pounds
-            output_message += f"{body_name} - {material_name}\n{mass_lb:.6f} lb\n\n"
-    return output_message
+        body_mass_kg = props.mass
+        total_mass_kg += body_mass_kg
+        actual_material_totals[material_name] = actual_material_totals.get(material_name, 0.0) + body_mass_kg
+
+    preset_totals = {name: preset_densities[name] * preset_volumes[name] for name in preset_volumes}
+    return preset_totals, actual_material_totals, total_mass_kg
+
+def add_copyable_mass_rows(inputs, title, mass_map, prefix):
+    inputs.addTextBoxCommandInput(
+        f'{prefix}_title',
+        '',
+        f'<b>{title}</b>',
+        1,
+        True
+    )
+
+    table = inputs.addTableCommandInput(f'{prefix}_table', '', 2, '4:1')
+    table.hasGrid = False
+
+    row_index = 0
+    for material, mass_kg in mass_map.items():
+        grams_number = format_grams_number(mass_kg)
+        material_id = sanitize_id(material)
+        material_text = inputs.addTextBoxCommandInput(
+            f'{prefix}_txt_{material_id}',
+            '',
+            f'<b>{material}</b>: {grams_number} g',
+            1,
+            True
+        )
+        button_id = f'copy_{prefix}_{material_id}'
+        copy_btn = inputs.addBoolValueInput(button_id, 'Copy', False, '', False)
+        command_state["copy_map"][button_id] = grams_number
+        table.addCommandInput(material_text, row_index, 0)
+        table.addCommandInput(copy_btn, row_index, 1)
+        row_index += 1
+
+class MassCommandExecuteHandler(adsk.core.CommandEventHandler):
+    def notify(self, args):
+        pass
+
+class MassInputChangedHandler(adsk.core.InputChangedEventHandler):
+    def notify(self, args):
+        try:
+            app = adsk.core.Application.get()
+            ui = app.userInterface
+            changed_input = adsk.core.InputChangedEventArgs.cast(args).input
+            copy_text = command_state["copy_map"].get(changed_input.id)
+            if not copy_text:
+                return
+
+            copy_to_clipboard(copy_text)
+        except Exception:
+            ui = adsk.core.Application.get().userInterface
+            if ui:
+                ui.messageBox('Copy failed:\n{}'.format(traceback.format_exc()))
+
+class MassCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def notify(self, args):
+        ui = None
+        try:
+            app = adsk.core.Application.get()
+            ui = app.userInterface
+            cmd = args.command
+            if hasattr(cmd, 'isOKButtonVisible'):
+                cmd.isOKButtonVisible = False
+            if hasattr(cmd, 'cancelButtonText'):
+                cmd.cancelButtonText = 'Dismiss'
+
+            on_execute = MassCommandExecuteHandler()
+            cmd.execute.add(on_execute)
+            handlers.append(on_execute)
+
+            on_input_changed = MassInputChangedHandler()
+            cmd.inputChanged.add(on_input_changed)
+            handlers.append(on_input_changed)
+
+            design = app.activeProduct
+            root_comp = design.rootComponent
+            if not root_comp or (root_comp.bRepBodies.count == 0 and root_comp.occurrences.count == 0):
+                ui.messageBox('No bodies or components in the active design.')
+                return
+
+            bodies, scope_label = collect_target_bodies(ui, root_comp)
+            if len(bodies) == 0:
+                ui.messageBox('No valid solid bodies found.')
+                return
+
+            preset_totals, actual_totals, total_mass_kg = build_mass_report_data(bodies)
+
+            command_state["copy_map"] = {}
+            inputs = cmd.commandInputs
+            inputs.addTextBoxCommandInput('scope', '', f'Scope: {scope_label}', 1, True)
+            inputs.addTextBoxCommandInput('total', '', f'Total: {format_grams_number(total_mass_kg)} g', 1, True)
+
+            add_copyable_mass_rows(inputs, 'Preset Density Estimate', preset_totals, 'preset')
+            add_copyable_mass_rows(inputs, 'Actual Totals By Material', actual_totals, 'actual')
+
+        except Exception:
+            if ui:
+                ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
 def run(context):
     ui = None
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
-        design = app.activeProduct
-        root_comp = design.rootComponent
+        log_lifecycle(app, 'loaded')
 
-        if not root_comp or (root_comp.bRepBodies.count == 0 and root_comp.occurrences.count == 0):
-            ui.messageBox('No bodies or components in the active design.')
-            return
+        existing_def = ui.commandDefinitions.itemById(CMD_ID)
+        if existing_def:
+            existing_def.deleteMe()
 
-        # Get all solid bodies in the active design
-        solid_bodies = get_all_solid_bodies(root_comp)
-        num_solid_bodies = len(solid_bodies)
+        cmd_def = ui.commandDefinitions.addButtonDefinition(
+            CMD_ID,
+            CMD_NAME,
+            CMD_DESCRIPTION,
+            ICON_FOLDER
+        )
 
-        if num_solid_bodies == 0:
-            ui.messageBox('No solid bodies in the active design.')
-            return
+        on_created = MassCommandCreatedHandler()
+        cmd_def.commandCreated.add(on_created)
+        handlers.append(on_created)
 
-        # Determine the unit system
-        units_mgr = design.fusionUnitsManager
-        default_units = units_mgr.defaultLengthUnits
-        is_metric = default_units in ['cm', 'mm', 'm']
+        workspace, panel = get_target_panel(ui)
+        if not workspace:
+            raise RuntimeError(f'Workspace not found: {WORKSPACE_ID}')
+        if not panel:
+            raise RuntimeError('Inspect toolbar panel not found in target workspace.')
 
-        output_message = f"RamBros 3D: TTT Mass Calculate\n"
-
-        # If no body or component selected, calculate total mass of all bodies
-        selected_entities = ui.activeSelections
-
-        # Handle case when one or more bodies are selected
-        if selected_entities.count > 0:
-            selected_bodies = []
-            total_mass_kg = 0.0  # Initialize total mass
-            
-            for entity in selected_entities:
-                if isinstance(entity.entity, adsk.fusion.BRepBody) and entity.entity.isSolid:
-                    if entity.entity not in selected_bodies:
-                        selected_bodies.append(entity.entity)
-                        total_mass_kg += calculate_mass_of_body(entity.entity)  # Add body mass
-                elif isinstance(entity.entity, adsk.fusion.Component):
-                    component_solid_bodies = get_all_solid_bodies(entity.entity)
-                    for body in component_solid_bodies:
-                        if body not in selected_bodies:
-                            selected_bodies.append(body)
-                            total_mass_kg += calculate_mass_of_body(body)  # Add component body mass
-                elif isinstance(entity.entity, adsk.fusion.BRepFace):
-                    parent_body = entity.entity.body
-                    if parent_body.isSolid and parent_body not in selected_bodies:
-                        selected_bodies.append(parent_body)
-                        total_mass_kg += calculate_mass_of_body(parent_body)  # Add face body mass
-
-            # If multiple bodies are selected
-            if len(selected_bodies) > 0:
-                output_message += "Mass of the SELECTED bodies:\n\n"
-                output_message += calculate_mass_with_preset_densities(selected_bodies, is_metric)
-                output_message += "\n" + display_mass_with_material_properties(selected_bodies, is_metric)
-                
-                # Display the total mass of the selected bodies
-                if is_metric:
-                    output_message += f"\nTotal Mass of Selected Bodies:\n\n{total_mass_kg * 1000:.6f} g\n\n{total_mass_kg:.6f} kg"
-                else:
-                    output_message += f"\nTotal Mass of Selected Bodies:\n\n{total_mass_kg * 2.20462:.6f} lb"
-                ui.messageBox(output_message)
-                return
+        created_panels = []
+        for target_panel in get_candidate_panels(workspace):
+            control = target_panel.controls.itemById(CMD_ID)
+            if not control:
+                control = target_panel.controls.addCommand(cmd_def)
+                # Promote in standard panels so it behaves like a normal command.
+                control.isPromotedByDefault = True
+                control.isPromoted = True
+                created_panels.append(target_panel.id)
             else:
-                ui.messageBox('Selected bodies are invalid or not solid.')
+                created_panels.append(target_panel.id)
 
-        # If no specific selection, calculate total mass of all bodies in the design
-        else:
-            output_message += "Total Mass of All Bodies:\n\n"
-            output_message += calculate_mass_with_preset_densities(solid_bodies, is_metric)
-            output_message += "\n" + display_mass_with_material_properties(solid_bodies, is_metric)
+        if not created_panels:
+            raise RuntimeError('Could not add command to an Inspect toolbar panel.')
 
-            # If multiple bodies with different material densities, calculate from material properties
-            if num_solid_bodies > 1:
-                densities = {body.material.name: body.physicalProperties.density for body in solid_bodies}
-                unique_densities = set(densities.values())
-                if len(unique_densities) > 1:
-                    total_mass_kg = sum(calculate_mass_of_body(body) for body in solid_bodies)
-                    if is_metric:
-                        output_message += f"\nTotal Mass from Material Properties:\n\n"
-                        output_message += f"{total_mass_kg * 1000:.6f} g\n\n"  # Convert to grams
-                        output_message += f"{total_mass_kg:.6f} kg"
-                    else:
-                        output_message += f"\nTotal Mass from Material Properties:\n\n"
-                        output_message += f"{total_mass_kg * 2.20462:.6f} lb"  # Convert to pounds
+        # Keep the module alive if Fusion runs this through a script-like lifecycle.
+        adsk.autoTerminate(False)
 
-            ui.messageBox(output_message.strip())
-
-    except Exception as e:
+    except Exception:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
 def stop(context):
-    pass
+    ui = None
+    try:
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+        log_lifecycle(app, 'unloaded')
+
+        workspace, panel = get_target_panel(ui)
+        if workspace:
+            for target_panel in get_candidate_panels(workspace):
+                control = target_panel.controls.itemById(CMD_ID)
+                if control:
+                    control.deleteMe()
+            if panel:
+                control = panel.controls.itemById(CMD_ID)
+                if control:
+                    control.deleteMe()
+
+        cmd_def = ui.commandDefinitions.itemById(CMD_ID)
+        if cmd_def:
+            cmd_def.deleteMe()
+    except Exception:
+        if ui:
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
