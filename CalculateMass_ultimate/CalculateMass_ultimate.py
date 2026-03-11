@@ -152,6 +152,24 @@ def build_mass_report_data(bodies):
     preset_totals = {name: preset_densities[name] * preset_volumes[name] for name in preset_volumes}
     return preset_totals, actual_material_totals, total_mass_kg
 
+def add_copyable_total_row(inputs, total_mass_kg):
+    grams_number = format_grams_number(total_mass_kg)
+    table = inputs.addTableCommandInput('total_table', '', 2, '4:1')
+    table.hasGrid = False
+
+    total_text = inputs.addTextBoxCommandInput(
+        'total_txt',
+        '',
+        f'Total: {grams_number} g',
+        1,
+        True
+    )
+    button_id = 'copy_total'
+    copy_btn = inputs.addBoolValueInput(button_id, 'Copy', False, '', False)
+    command_state["copy_map"][button_id] = grams_number
+    table.addCommandInput(total_text, 0, 0)
+    table.addCommandInput(copy_btn, 0, 1)
+
 def add_copyable_mass_rows(inputs, title, mass_map, prefix):
     inputs.addTextBoxCommandInput(
         f'{prefix}_title',
@@ -209,6 +227,8 @@ class MassCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             app = adsk.core.Application.get()
             ui = app.userInterface
             cmd = args.command
+            if hasattr(cmd, 'setDialogInitialSize'):
+                cmd.setDialogInitialSize(520, 520)
             if hasattr(cmd, 'isOKButtonVisible'):
                 cmd.isOKButtonVisible = False
             if hasattr(cmd, 'cancelButtonText'):
@@ -238,7 +258,7 @@ class MassCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             command_state["copy_map"] = {}
             inputs = cmd.commandInputs
             inputs.addTextBoxCommandInput('scope', '', f'Scope: {scope_label}', 1, True)
-            inputs.addTextBoxCommandInput('total', '', f'Total: {format_grams_number(total_mass_kg)} g', 1, True)
+            add_copyable_total_row(inputs, total_mass_kg)
 
             add_copyable_mass_rows(inputs, 'Preset Density Estimate', preset_totals, 'preset')
             add_copyable_mass_rows(inputs, 'Actual Totals By Material', actual_totals, 'actual')
