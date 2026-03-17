@@ -91,9 +91,15 @@ def get_all_solid_bodies(component):
         solid_bodies.extend(get_all_solid_bodies(occurrence.component))
     return solid_bodies
 
-def format_grams_number(mass_kg):
-    grams = mass_kg * 1000.0
-    return f"{grams:.3f}"
+def is_metric_document(design):
+    units_mgr = design.fusionUnitsManager
+    default_units = units_mgr.defaultLengthUnits
+    return default_units in ['cm', 'mm', 'm']
+
+def format_display_mass(mass_kg, is_metric):
+    if is_metric:
+        return f"{mass_kg * 1000.0:.3f}", 'g'
+    return f"{mass_kg * 2.20462263:.3f}", 'lbs'
 
 def sanitize_id(text):
     safe = ''.join(ch if ch.isalnum() else '_' for ch in text)
@@ -152,25 +158,25 @@ def build_mass_report_data(bodies):
     preset_totals = {name: preset_densities[name] * preset_volumes[name] for name in preset_volumes}
     return preset_totals, actual_material_totals, total_mass_kg
 
-def add_copyable_total_row(inputs, total_mass_kg):
-    grams_number = format_grams_number(total_mass_kg)
+def add_copyable_total_row(inputs, total_mass_kg, is_metric):
+    mass_number, mass_unit = format_display_mass(total_mass_kg, is_metric)
     table = inputs.addTableCommandInput('total_table', '', 2, '4:1')
     table.hasGrid = False
 
     total_text = inputs.addTextBoxCommandInput(
         'total_txt',
         '',
-        f'Total: {grams_number} g',
+        f'Total: {mass_number} {mass_unit}',
         1,
         True
     )
     button_id = 'copy_total'
     copy_btn = inputs.addBoolValueInput(button_id, 'Copy', False, '', False)
-    command_state["copy_map"][button_id] = grams_number
+    command_state["copy_map"][button_id] = mass_number
     table.addCommandInput(total_text, 0, 0)
     table.addCommandInput(copy_btn, 0, 1)
 
-def add_copyable_mass_rows(inputs, title, mass_map, prefix):
+def add_copyable_mass_rows(inputs, title, mass_map, prefix, is_metric):
     inputs.addTextBoxCommandInput(
         f'{prefix}_title',
         '',
@@ -184,18 +190,18 @@ def add_copyable_mass_rows(inputs, title, mass_map, prefix):
 
     row_index = 0
     for material, mass_kg in mass_map.items():
-        grams_number = format_grams_number(mass_kg)
+        mass_number, mass_unit = format_display_mass(mass_kg, is_metric)
         material_id = sanitize_id(material)
         material_text = inputs.addTextBoxCommandInput(
             f'{prefix}_txt_{material_id}',
             '',
-            f'<b>{material}</b>: {grams_number} g',
+            f'<b>{material}</b>: {mass_number} {mass_unit}',
             1,
             True
         )
         button_id = f'copy_{prefix}_{material_id}'
         copy_btn = inputs.addBoolValueInput(button_id, 'Copy', False, '', False)
-        command_state["copy_map"][button_id] = grams_number
+        command_state["copy_map"][button_id] = mass_number
         table.addCommandInput(material_text, row_index, 0)
         table.addCommandInput(copy_btn, row_index, 1)
         row_index += 1
@@ -254,14 +260,15 @@ class MassCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 return
 
             preset_totals, actual_totals, total_mass_kg = build_mass_report_data(bodies)
+            is_metric = is_metric_document(design)
 
             command_state["copy_map"] = {}
             inputs = cmd.commandInputs
             inputs.addTextBoxCommandInput('scope', '', f'Scope: {scope_label}', 1, True)
-            add_copyable_total_row(inputs, total_mass_kg)
+            add_copyable_total_row(inputs, total_mass_kg, is_metric)
 
-            add_copyable_mass_rows(inputs, 'Preset Density Estimate', preset_totals, 'preset')
-            add_copyable_mass_rows(inputs, 'Actual Totals By Material', actual_totals, 'actual')
+            add_copyable_mass_rows(inputs, 'Preset Density Estimate', preset_totals, 'preset', is_metric)
+            add_copyable_mass_rows(inputs, 'Actual Totals By Material', actual_totals, 'actual', is_metric)
 
         except Exception:
             if ui:
