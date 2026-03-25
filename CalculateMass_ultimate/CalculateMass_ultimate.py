@@ -23,6 +23,7 @@
 # Future fusion 360 champions of TooTallToby's Tournaments
 
 import adsk.core, adsk.fusion, traceback
+import os
 import platform
 import subprocess
 
@@ -31,8 +32,8 @@ CMD_ID = 'RamBros_CalculateMassUltimateCmd'
 CMD_NAME = 'Calculate Mass Ultimate'
 CMD_DESCRIPTION = 'Calculate mass for selected or all solid bodies.'
 WORKSPACE_ID = 'FusionSolidEnvironment'
-ICON_FOLDER = ''
-PANEL_IDS_TO_ADD = ['SolidInspectPanel']
+PANEL_IDS_TO_ADD = ['SolidInspectPanel', 'InspectPanel']
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
 
 handlers = []
 command_state = {"copy_map": {}}
@@ -48,9 +49,11 @@ def get_target_panel(ui):
     if not workspace:
         return None, None
 
-    panel = workspace.toolbarPanels.itemById('SolidInspectPanel')
-    if panel:
-        return workspace, panel
+    panel = None
+    for panel_id in PANEL_IDS_TO_ADD:
+        panel = workspace.toolbarPanels.itemById(panel_id)
+        if panel:
+            return workspace, panel
 
     for candidate in workspace.toolbarPanels:
         name = (candidate.name or '').lower()
@@ -65,21 +68,29 @@ def get_candidate_panels(workspace):
     if not workspace:
         return panels
 
-    # 1) Explicit known IDs first.
     for panel_id in PANEL_IDS_TO_ADD:
         panel = workspace.toolbarPanels.itemById(panel_id)
         if panel and panel not in panels:
             panels.append(panel)
 
-    # 2) Dynamic match for localized/variant Inspect panel naming.
-    for panel in workspace.toolbarPanels:
-        name = (panel.name or '').lower()
-        panel_id = (panel.id or '').lower()
+    for candidate in workspace.toolbarPanels:
+        name = (candidate.name or '').lower()
+        panel_id = (candidate.id or '').lower()
         if 'inspect' in name or 'inspect' in panel_id:
-            if panel not in panels:
-                panels.append(panel)
+            if candidate not in panels:
+                panels.append(candidate)
 
     return panels
+
+def add_command_to_panel(panel, cmd_def):
+    control = panel.controls.itemById(CMD_ID)
+    if panel:
+        if control:
+            return control
+
+        return panel.controls.addCommand(cmd_def)
+
+    return None
 
 def get_all_solid_bodies(component):
     """Retrieve all solid bodies from the component."""
@@ -302,19 +313,15 @@ def run(context):
         if not panel:
             raise RuntimeError('Inspect toolbar panel not found in target workspace.')
 
-        created_panels = []
+        created_controls = []
         for target_panel in get_candidate_panels(workspace):
-            control = target_panel.controls.itemById(CMD_ID)
-            if not control:
-                control = target_panel.controls.addCommand(cmd_def)
-                # Promote in standard panels so it behaves like a normal command.
+            control = add_command_to_panel(target_panel, cmd_def)
+            if control:
                 control.isPromotedByDefault = True
                 control.isPromoted = True
-                created_panels.append(target_panel.id)
-            else:
-                created_panels.append(target_panel.id)
+                created_controls.append(control)
 
-        if not created_panels:
+        if not created_controls:
             raise RuntimeError('Could not add command to an Inspect toolbar panel.')
 
         # Keep the module alive if Fusion runs this through a script-like lifecycle.
@@ -335,10 +342,6 @@ def stop(context):
         if workspace:
             for target_panel in get_candidate_panels(workspace):
                 control = target_panel.controls.itemById(CMD_ID)
-                if control:
-                    control.deleteMe()
-            if panel:
-                control = panel.controls.itemById(CMD_ID)
                 if control:
                     control.deleteMe()
 
